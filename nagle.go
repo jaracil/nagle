@@ -45,11 +45,18 @@ func (nw *NagleWrapper) Write(data []byte) (int, error) {
 
 	nw.buffer.Write(data)
 
-	nw.timer.Reset(nw.flushTimeout)
-
 	if nw.buffer.Len() >= nw.bufferSize {
 		return nw.flushLocked()
 	}
+
+	if nw.timer.Stop() {
+		select {
+		case <-nw.timer.C:
+		default:
+		}
+	}
+
+	nw.timer.Reset(nw.flushTimeout)
 
 	return len(data), nil
 }
