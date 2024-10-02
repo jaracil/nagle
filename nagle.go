@@ -22,6 +22,7 @@ type NagleWrapper struct {
 func NewNagleWrapper(rwc io.ReadWriteCloser, bufferSize int, flushTimeout time.Duration) *NagleWrapper {
 	wrapper := &NagleWrapper{
 		rwc:          rwc,
+		buffer:       &bytes.Buffer{},
 		bufferSize:   bufferSize,
 		flushTimeout: flushTimeout,
 		timer:        time.NewTimer(flushTimeout),
