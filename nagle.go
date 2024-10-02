@@ -49,7 +49,7 @@ func (nw *NagleWrapper) Write(data []byte) (int, error) {
 		return nw.flushLocked()
 	}
 
-	if nw.timer.Stop() {
+	if !nw.timer.Stop() {
 		select {
 		case <-nw.timer.C:
 		default:
@@ -81,6 +81,14 @@ func (nw *NagleWrapper) Close() error {
 	}
 
 	nw.closed = true
+	// Wake up the flush goroutine
+	if !nw.timer.Stop() {
+		select {
+		case <-nw.timer.C:
+		default:
+		}
+	}
+	nw.timer.Reset(0)
 	return nw.rwc.Close()
 }
 
