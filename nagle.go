@@ -16,6 +16,7 @@ type NagleWrapper struct {
 	mutex        sync.Mutex
 	timer        *time.Timer
 	closed       bool
+	wg           sync.WaitGroup
 }
 
 // NewNagleWrapper creates a new wrapper with Nagle's algorithm.
@@ -29,6 +30,7 @@ func NewNagleWrapper(rwc io.ReadWriteCloser, bufferSize int, flushTimeout time.D
 		closed:       false,
 	}
 
+	wrapper.wg.Add(1)
 	go wrapper.handleFlush()
 
 	return wrapper
@@ -68,6 +70,7 @@ func (nw *NagleWrapper) Read(p []byte) (int, error) {
 
 // Close closes the wrapper, flushing any remaining data.
 func (nw *NagleWrapper) Close() error {
+	defer nw.wg.Wait()
 	nw.mutex.Lock()
 	defer nw.mutex.Unlock()
 
@@ -75,10 +78,7 @@ func (nw *NagleWrapper) Close() error {
 		return io.ErrClosedPipe
 	}
 
-	_, err := nw.flushLocked()
-	if err != nil {
-		return err
-	}
+	nw.flushLocked()
 
 	nw.closed = true
 	// Wake up the flush goroutine
@@ -93,6 +93,7 @@ func (nw *NagleWrapper) Close() error {
 }
 
 func (nw *NagleWrapper) handleFlush() {
+	defer nw.wg.Done()
 	for {
 		<-nw.timer.C
 
