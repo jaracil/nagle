@@ -45,10 +45,17 @@ func (nw *NagleWrapper) Write(data []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 
-	nw.buffer.Write(data)
+	n, err := nw.buffer.Write(data)
+	if err != nil {
+		return n, err
+	}
 
 	if nw.buffer.Len() >= nw.bufferSize {
-		return nw.flushLocked()
+		flushedBytes, flushErr := nw.flushLocked()
+		if flushErr != nil {
+			return flushedBytes, flushErr
+		}
+		return flushedBytes, nil
 	}
 
 	if !nw.timer.Stop() {
@@ -60,7 +67,7 @@ func (nw *NagleWrapper) Write(data []byte) (int, error) {
 
 	nw.timer.Reset(nw.flushTimeout)
 
-	return len(data), nil
+	return n, nil
 }
 
 // Read reads data from the underlying stream.
@@ -68,9 +75,8 @@ func (nw *NagleWrapper) Read(p []byte) (int, error) {
 	return nw.rwc.Read(p)
 }
 
-// Close closes the wrapper, flushing any remaining data.
-func (nw *NagleWrapper) Close() error {
-	defer nw.wg.Wait()
+// Flush manually flushes any buffered data to the underlying writer.
+func (nw *NagleWrapper) Flush() error {
 	nw.mutex.Lock()
 	defer nw.mutex.Unlock()
 
@@ -78,10 +84,26 @@ func (nw *NagleWrapper) Close() error {
 		return io.ErrClosedPipe
 	}
 
-	nw.flushLocked()
+	_, err := nw.flushLocked()
+	return err
+}
 
+// Close closes the wrapper, flushing any remaining data.
+func (nw *NagleWrapper) Close() error {
+	nw.mutex.Lock()
+	
+	if nw.closed {
+		nw.mutex.Unlock()
+		return io.ErrClosedPipe
+	}
+
+	// Flush any remaining data
+	_, flushErr := nw.flushLocked()
+
+	// Mark as closed to signal the flush goroutine
 	nw.closed = true
-	// Wake up the flush goroutine
+	
+	// Stop and drain the timer to wake up the flush goroutine
 	if !nw.timer.Stop() {
 		select {
 		case <-nw.timer.C:
@@ -89,7 +111,20 @@ func (nw *NagleWrapper) Close() error {
 		}
 	}
 	nw.timer.Reset(0)
-	return nw.rwc.Close()
+	
+	nw.mutex.Unlock()
+	
+	// Wait for the flush goroutine to exit
+	nw.wg.Wait()
+	
+	// Close the underlying writer
+	closeErr := nw.rwc.Close()
+	
+	// Return the first error that occurred
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }
 
 func (nw *NagleWrapper) handleFlush() {
@@ -116,10 +151,21 @@ func (nw *NagleWrapper) flushLocked() (int, error) {
 		return 0, nil
 	}
 
-	n, err := nw.buffer.WriteTo(nw.rwc)
-	if err != nil {
-		return int(n), err
+	data := nw.buffer.Bytes()
+	totalWritten := 0
+
+	for totalWritten < len(data) {
+		n, err := nw.rwc.Write(data[totalWritten:])
+		totalWritten += n
+		if err != nil {
+			// Keep unwritten data in buffer for next flush attempt
+			remaining := data[totalWritten:]
+			nw.buffer.Reset()
+			nw.buffer.Write(remaining)
+			return totalWritten, err
+		}
 	}
 
-	return int(n), nil
+	nw.buffer.Reset()
+	return totalWritten, nil
 }
